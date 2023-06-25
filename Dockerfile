@@ -1,6 +1,6 @@
 FROM ubuntu
 
-RUN apt-get update && apt-get install -y xxd lldb gdb python3 gdbserver
+RUN apt-get update && apt-get install -y xxd lldb gdb python3 gdbserver netcat
 
 RUN mkdir -p wasp-server
 
