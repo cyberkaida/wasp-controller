@@ -1,6 +1,6 @@
 FROM ubuntu
 
-RUN apt-get update && apt-get install -y xxd lldb gdb python3 gdbserver netcat
+RUN apt-get update && apt-get install -y xxd lldb gdb python3 gdbserver netcat strace
 
 RUN mkdir -p wasp-server
 
@@ -15,5 +15,5 @@ CMD ./wasp-server/server.py
 
 USER malware
 
-RUN cp /wasp-malware/*.localhost /tmp
-RUN chmod +x /tmp/*.localhost
+RUN cp /wasp-malware/*.localhost.patched /tmp
+RUN chmod +x /tmp/*.localhost.patched
