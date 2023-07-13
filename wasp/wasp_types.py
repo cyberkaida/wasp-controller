@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
+from datetime import datetime
 from enum import Enum
 import uuid
 import base64
@@ -56,6 +57,8 @@ class WaspMalware(object):
     wasp_directory: Path
     collection_directory: Path
     tasking_directory: Path
+    completed_taskking_directory: Path
+    response_directory: Path
 
     def __init__(self, response: WaspResponse) -> None:
         self.initial_response = response
@@ -67,6 +70,12 @@ class WaspMalware(object):
 
         self.tasking_directory = self.wasp_directory / "tasking"
         self.tasking_directory.mkdir(parents=True, exist_ok=True)
+
+        self.completed_tasking_directory = self.wasp_directory / "completed_tasking"
+        self.completed_tasking_directory.mkdir(parents=True, exist_ok=True)
+
+        self.response_directory = self.wasp_directory / "response"
+        self.response_directory.mkdir(parents=True, exist_ok=True)
 
         self.collection_directory = self.wasp_directory / "collection"
         self.collection_directory.mkdir(parents=True, exist_ok=True)
@@ -81,11 +90,22 @@ class WaspMalware(object):
         metadata_path.write_bytes(self.pack())
 
     def submit_task(self, command: WaspCommand):
-        from datetime import datetime
         utc_date = datetime.utcnow()
         time_string = utc_date.strftime("%Y%m%d-%H%M%S")
         task_path = self.tasking_directory / f"command-{time_string}-{command.command_id}.json"
         task_path.write_bytes(command.pack())
+
+    def submit_response(self, response: WaspResponse):
+        utc_date = datetime.utcnow()
+        time_string = utc_date.strftime("%Y%m%d-%H%M%S")
+        if response.command:
+            command_id = response.command.command_id
+        else:
+            logger.warning(f"Response {response} not associated with command.")
+            command_id = str(uuid.uuid4())
+
+        task_path = self.response_directory / f"response-{time_string}-{command_id}.json"
+        task_path.write_bytes(response.pack())
 
     def get_tasks(self) -> List[WaspCommand]:
         tasks: List[WaspCommand] = []
@@ -135,9 +155,11 @@ class WaspCommand(object):
     wasp: WaspMalware
     command_id: str = str(uuid.uuid4())
     name: str
+    responses: List[WaspResponse]
 
     def __init__(self, wasp: WaspMalware) -> None:
         self.wasp = wasp
+        self.responses = []
 
     def get_dict(self) -> Dict:
         raise NotImplementedError()
@@ -171,6 +193,11 @@ class WaspCommand(object):
     def __repr__(self) -> str:
         return json.dumps(self.get_dict(), sort_keys=True, indent=2)
 
+    def submit_response(self, response: WaspResponse):
+        response.command = self
+        self.responses.append(response)
+        self.handle_response(response)
+
     def handle_response(self, response: WaspResponse):
         output: Optional[bytes | str] = None
         try:
@@ -184,12 +211,14 @@ class WaspCommand(object):
         self.wasp.remove_task(self)
 
 class WaspResponse(object):
+    command: Optional[WaspCommand] = None
     metadata: Dict = {}
     data: bytes = b''
 
-    def __init__(self, metadata: Dict, data: bytes):
+    def __init__(self, metadata: Dict, data: bytes, command: Optional[WaspCommand] = None):
         self.metadata = metadata
         self.data = data
+        self.command = command
 
     def pack(self) -> bytes:
         packed = {

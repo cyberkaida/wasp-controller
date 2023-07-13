@@ -19,6 +19,8 @@ class WaspUI(object):
     @property
     def wasps(self) -> List[WaspMalware]:
         wasps: List[WaspMalware] = []
+        if not WASPS_PATH.exists():
+            WASPS_PATH.mkdir(exist_ok=True, parents=True)
         for wasp_dir in WASPS_PATH.iterdir():
             wasp_id = wasp_dir.name
             metadata_path = wasp_dir / "wasp.json"
@@ -74,6 +76,11 @@ if __name__ == '__main__':
     file_list_parser.add_argument("PATH", type=Path, help="The path to list on the Wasp")
 
     queue_parser = subparser.add_parser("queue", help="Display the currently queued commands for this Wasp", exit_on_error=False)
+
+    build_parser = subparser.add_parser("build", aliases=["configure", "config"], help="Build a Wasp", exit_on_error=False)
+    build_parser.add_argument("--beacon-url", type=str, help="The URL to the C2 server, in the form wasp://hostname:port")
+    build_parser.add_argument("--backup-beacon-url", type=str, help="The URL to the backup C2 server, in the form wasp://hostname:port")
+    build_parser.add_argument("PATH", type=Path, help="The to place the built Wasp")
 
     # TODO: Implement "vim"
     # Download file locally

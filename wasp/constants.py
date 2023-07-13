@@ -9,3 +9,7 @@ WASP_HOME = Path.home() / ".wasp"
 WASP_HOME.mkdir(parents=False, exist_ok=True)
 
 WASPS_PATH = WASP_HOME / "wasps"
+
+WASP_BUILDS_PATH = WASP_HOME / "builds"
+
+WASP_BASE_BUILD = WASP_HOME / "base_build" / "wasp_base"
