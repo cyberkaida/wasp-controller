@@ -96,7 +96,7 @@ class WaspServer(socketserver.BaseRequestHandler):
                 self.send_command(command)
                 response = self.receive_result()
                 if response:
-                    command.handle_response(response)
+                    command.submit_response(response)
                     command.mark_complete()
         self.logger.info(f"No more tasks for {self.wasp}")
 

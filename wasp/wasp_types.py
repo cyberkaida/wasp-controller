@@ -100,11 +100,13 @@ class WaspMalware(object):
         time_string = utc_date.strftime("%Y%m%d-%H%M%S")
         if response.command:
             command_id = response.command.command_id
+            command_type = response.command.name
         else:
             logger.warning(f"Response {response} not associated with command.")
             command_id = str(uuid.uuid4())
+            command_type = "unknown"
 
-        task_path = self.response_directory / f"response-{time_string}-{command_id}.json"
+        task_path = self.response_directory / f"response-{time_string}-{command_type}-{command_id}.json"
         task_path.write_bytes(response.pack())
 
     def get_tasks(self) -> List[WaspCommand]:
@@ -156,6 +158,7 @@ class WaspCommand(object):
     command_id: str = str(uuid.uuid4())
     name: str
     responses: List[WaspResponse]
+    generated_date: datetime = datetime.utcnow()
 
     def __init__(self, wasp: WaspMalware) -> None:
         self.wasp = wasp
@@ -196,6 +199,9 @@ class WaspCommand(object):
     def submit_response(self, response: WaspResponse):
         response.command = self
         self.responses.append(response)
+        # Tell the originating wasp about it so it can be archived
+        self.wasp.submit_response(response)
+        # Handle this response however the particular command type wants
         self.handle_response(response)
 
     def handle_response(self, response: WaspResponse):
